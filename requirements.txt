@@ -1,0 +1,9 @@
+numpy
+joblib
+tensorflow
+scikit-learn
+ftfy
+tqdm
+scipy
+pandas
+spacy
