@@ -19,11 +19,6 @@ from utils import encode_dataset, iter_data, find_trainable_variables, get_ema_v
 from utils import convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
 
 
-opt_fns = {
-    'adam': adam,
-}
-
-
 def gelu(x):
     return 0.5*x*(1+tf.tanh(math.sqrt(2/math.pi)*(x+0.044715*tf.pow(x, 3))))
 
@@ -128,11 +123,11 @@ def clf(x, ny, w_init=tf.random_normal_initializer(stddev=0.02), b_init=tf.const
 argmax = lambda x: np.argmax(x, 1)
 
 pred_fns = {
-    'rocstories':argmax,
+    'rocstories': argmax,
 }
 
-filenames = {
-    'rocstories':'ROCStories.tsv',
+file_names = {
+    'rocstories': 'ROCStories.tsv',
 }
 
 label_decoders = {
@@ -298,31 +293,34 @@ class Model(object):
         for i, xs in enumerate(zip(*xs)):
             do_reuse = True if i > 0 else None
             with tf.device(assign_to_gpu(i, "/gpu:0")), tf.variable_scope(tf.get_variable_scope(), reuse=do_reuse):
+
                 clf_logits, clf_losses, lm_losses = self.model(*xs, train=True, reuse=do_reuse)
                 if self.params["lm_coef"] > 0:
                     train_loss = tf.reduce_mean(clf_losses) + self.params["lm_coef"] * tf.reduce_mean(lm_losses)
                 else:
                     train_loss = tf.reduce_mean(clf_losses)
+
                 params = find_trainable_variables("model")
                 grads = tf.gradients(train_loss, params)
                 grads = list(zip(grads, params))
                 gpu_grads.append(grads)
                 gpu_ops.append([clf_logits, clf_losses, lm_losses])
+
         ops = [tf.concat(op, 0) for op in zip(*gpu_ops)]
         grads = average_grads(gpu_grads)
         grads = [g for g, p in grads]
-        train = opt_fns[self.params["opt"]](params,
-                                            grads,
-                                            self.params["lr"],
-                                            partial(lr_schedules[self.params["lr_schedule"]],
-                                                    warmup=self.params["lr_warmup"]),
-                                            self.n_updates_total,
-                                            l2=self.params["l2"],
-                                            max_grad_norm=self.params["max_grad_norm"],
-                                            vector_l2=self.params["vector_l2"],
-                                            b1=self.params["b1"],
-                                            b2=self.params["b2"],
-                                            e=self.params["e"])
+        train = adam(params,
+                     grads,
+                     self.params["lr"],
+                     partial(lr_schedules[self.params["lr_schedule"]],
+                             warmup=self.params["lr_warmup"]),
+                     self.n_updates_total,
+                     l2=self.params["l2"],
+                     max_grad_norm=self.params["max_grad_norm"],
+                     vector_l2=self.params["vector_l2"],
+                     b1=self.params["b1"],
+                     b2=self.params["b2"],
+                     e=self.params["e"])
 
         return [train] + ops
 
@@ -366,8 +364,17 @@ class Model(object):
     def transform_roc(self, X1, X2, X3):
 
         n_batch = len(X1)
-        xmb = np.zeros((n_batch, 2, self.params["n_ctx"], 2), dtype=np.int32)
-        mmb = np.zeros((n_batch, 2, self.params["n_ctx"]), dtype=np.float32)
+        xmb = np.zeros((n_batch,
+                        2,
+                        self.params["n_ctx"],
+                        2),
+                       dtype=np.int32)
+
+        mmb = np.zeros((n_batch,
+                        2,
+                        self.params["n_ctx"]),
+                       dtype=np.float32)
+
         start = self.encoder['_start_']
         delimiter = self.encoder['_delimiter_']
         for i, (x1, x2, x3), in enumerate(zip(X1, X2, X3)):
@@ -393,20 +400,21 @@ class Model(object):
             encode_dataset(rocstories(self.params["data_dir"]),
                            encoder=text_encoder)
 
+
         self.encoder['_start_'] = len(self.encoder)
         self.encoder['_delimiter_'] = len(self.encoder)
         self.encoder['_classify_'] = len(self.encoder)
         self.clf_token = self.encoder['_classify_']
         self.max_len = self.params["n_ctx"]//2-2
 
-        self.params["n_ctx"] = \
-            min(max([len(x1[:self.max_len])+max(len(x2[:self.max_len]),
-                                                len(x3[:self.max_len])) for x1, x2, x3 in zip(trX1, trX2, trX3)] + \
-                    [len(x1[:self.max_len])+max(len(x2[:self.max_len]),
-                                                len(x3[:self.max_len])) for x1, x2, x3 in zip(vaX1, vaX2, vaX3)] + \
-                    [len(x1[:self.max_len])+max(len(x2[:self.max_len]),
-                                                len(x3[:self.max_len])) for x1, x2, x3 in zip(teX1, teX2, teX3)])+3,
-                self.params["n_ctx"])
+        temp = max([len(x1[:self.max_len])+max(len(x2[:self.max_len]),
+                                               len(x3[:self.max_len])) for x1, x2, x3 in zip(trX1, trX2, trX3)] + \
+                   [len(x1[:self.max_len])+max(len(x2[:self.max_len]),
+                                               len(x3[:self.max_len])) for x1, x2, x3 in zip(vaX1, vaX2, vaX3)] + \
+                   [len(x1[:self.max_len])+max(len(x2[:self.max_len]),
+                                               len(x3[:self.max_len])) for x1, x2, x3 in zip(teX1, teX2, teX3)])
+
+        self.params["n_ctx"] = min(temp + 3, self.params["n_ctx"])
 
         self.trX, self.trM = self.transform_roc(trX1, trX2, trX3)
         self.vaX, self.vaM = self.transform_roc(vaX1, vaX2, vaX3)
@@ -486,7 +494,7 @@ class Model(object):
                                                                                       'best_params.jl')))])
 
     def predict(self):
-        filename = filenames[self.params["dataset"]]
+        filename = file_names[self.params["dataset"]]
         pred_fn = pred_fns[self.params["dataset"]]
         label_decoder = label_decoders[self.params["dataset"]]
         predictions = pred_fn(self.iter_predict(self.teX, self.teM))
